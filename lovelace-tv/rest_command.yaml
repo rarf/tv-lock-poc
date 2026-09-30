@@ -1,0 +1,44 @@
+# TV Lock - rest_command (gerado do projeto)
+tv_lock_status:
+  url: "http://127.0.0.1:8129/status?tv=tv_da_sala"
+  method: get
+  headers:
+    X-TV-Lock-Token: !secret tv_lock_token
+  timeout: 60
+
+tv_lock_guard:
+  url: "http://127.0.0.1:8129/guard?tv=tv_da_sala"
+  method: get
+  headers:
+    X-TV-Lock-Token: !secret tv_lock_token
+  timeout: 60
+
+tv_lock_do_lock:
+  url: "http://127.0.0.1:8129/lock"
+  method: post
+  headers:
+    X-TV-Lock-Token: !secret tv_lock_token
+    Content-Type: application/json
+  payload: >-
+    {"tv": "tv_da_sala", "actor": "{{ user_id }}", "force": {{ force | default(false) | bool(force=true) | lower }}}
+  timeout: 180
+
+tv_lock_do_unlock:
+  url: "http://127.0.0.1:8129/unlock"
+  method: post
+  headers:
+    X-TV-Lock-Token: !secret tv_lock_token
+    Content-Type: application/json
+  payload: >-
+    {"tv": "tv_da_sala", "actor": "{{ user_id }}", "minutes": {{ minutes | default(120, true) }}}
+  timeout: 180
+
+tv_lock_maintenance:
+  url: "http://127.0.0.1:8129/maintenance"
+  method: post
+  headers:
+    X-TV-Lock-Token: !secret tv_lock_token
+    Content-Type: application/json
+  payload: >-
+    {"tv": "tv_da_sala", "actor": "{{ user_id }}", "minutes": {{ minutes | default(30, true) }}}
+  timeout: 120

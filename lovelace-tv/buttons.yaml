@@ -1,0 +1,90 @@
+# TV Lock - template (gerado do projeto)
+- sensor:
+    - name: "TV da sala -apps bloqueadas"
+      unique_id: tv_sala_apps_bloqueadas
+      unit_of_measurement: "apps"
+      state: >-
+        {% set s = states('sensor.tv_sala_apps_bloqueadas_raw') %}
+        {{ s | int(0) if s not in ('unknown', 'unavailable') else 0 }}
+      icon: mdi:lock
+
+    - name: "TV da sala -bloqueada"
+      unique_id: tv_sala_bloqueada
+      state: >-
+        {% set s = states('sensor.tv_sala_bloqueada_raw') %}
+        {% if s in ('unknown', 'unavailable') %} unknown
+        {% else %} {{ s }} {% endif %}
+      icon: mdi:tv-off
+
+    - name: "TV da sala -alguem a ver"
+      unique_id: tv_sala_em_uso
+      state: >-
+        {% set s = states('sensor.tv_sala_em_uso_raw') %}
+        {% if s in ('unknown', 'unavailable') %} unknown
+        {% else %} {{ 'sim' if s == 'yes' else 'nao' }} {% endif %}
+      icon: mdi:eye
+
+    - name: "TV da sala -a ver"
+      unique_id: tv_sala_a_ver
+      state: >-
+        {% set s = states('sensor.tv_sala_a_ver_raw') %}
+        {{ s if s not in ('unknown', 'unavailable') else 'nada' }}
+      icon: mdi:play-circle
+
+    - name: "TV da sala -destrava ate"
+      unique_id: tv_sala_destrava_ate
+      state: >-
+        {% set s = states('sensor.tv_sala_destrava_ate_raw') %}
+        {{ s if s not in ('unknown', 'unavailable', 'none') else 'travada' }}
+      icon: mdi:timer-sand
+# TV Lock — botoes (template button)
+# `press` chama o script correspondente, com os mesmos service_data do painel.
+# Nota: nesta build o dominio `button` por YAML exige `platform:`, por isso os
+# botoes sao template buttons com `press`.
+
+- button:
+    - name: "Travar TV"
+      unique_id: tv_lock_botao_travar
+      icon: mdi:lock
+      press:
+        - action: call-service
+          target:
+            entity_id: script.tv_trava
+          data:
+            forcar: false
+
+    - name: "Destravar 2 h"
+      unique_id: tv_lock_botao_destravar_2h
+      icon: mdi:lock-open
+      press:
+        - action: call-service
+          target:
+            entity_id: script.tv_destrava
+          data:
+            minutos: 120
+
+    - name: "Destravar 30 min"
+      unique_id: tv_lock_botao_destravar_30m
+      icon: mdi:lock-open-variant
+      press:
+        - action: call-service
+          target:
+            entity_id: script.tv_destrava_curto
+
+    - name: "Modo manutenção"
+      unique_id: tv_lock_botao_manutencao
+      icon: mdi:wrench
+      press:
+        - action: call-service
+          target:
+            entity_id: script.tv_manutencao
+          data:
+            minutos: 30
+
+    - name: "Travar mesmo assim"
+      unique_id: tv_lock_botao_travar_forcar
+      icon: mdi:lock-alert
+      press:
+        - action: call-service
+          target:
+            entity_id: script.tv_trava_forcar

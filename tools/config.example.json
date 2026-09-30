@@ -1,0 +1,5 @@
+{
+  "_comment": "Copy to tools/state/config.json and edit. TV name -> adb serial (host:port).",
+  "tv_sala": "192.0.2.10:5555",
+  "tv_quarto": "192.0.2.11:5555"
+}

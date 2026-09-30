@@ -1,0 +1,21 @@
+[Unit]
+Description=Publica o estado da trava parental no Home Assistant
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/Projects/home-assistant
+ExecStart=/usr/bin/python3 /srv/Projects/home-assistant/tools/tv_lock_publish.py --interval 60
+Restart=always
+RestartSec=15
+# o publicador so precisa de rede + leitura; nada de escrever fora de tools/state
+ProtectSystem=strict
+ReadWritePaths=/srv/Projects/home-assistant/tools/state
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=append:/srv/Projects/home-assistant/tools/state/publisher.log
+StandardError=append:/srv/Projects/home-assistant/tools/state/publisher.log
+
+[Install]
+WantedBy=default.target

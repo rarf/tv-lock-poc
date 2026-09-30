@@ -1,0 +1,11 @@
+# Segredos e estado runtime — NUNCA versionar
+tools/state/
+state/
+*.pyc
+__pycache__/
+
+# Configuracao local (copiar de config.example.json)
+tools/config.json
+
+# Logs
+*.log

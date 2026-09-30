@@ -1,0 +1,21 @@
+[Unit]
+Description=Servico de trava parental das TVs (control plane do Home Assistant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/Projects/home-assistant
+ExecStart=/usr/bin/python3 /srv/Projects/home-assistant/tools/tv_lock_service.py --host 127.0.0.1 --port 8129
+Restart=always
+RestartSec=10
+# precisa de ler os ficheiros de estado e escrever journal/audit
+ProtectSystem=strict
+ReadWritePaths=/srv/Projects/home-assistant/tools/state
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=append:/srv/Projects/home-assistant/tools/state/service.log
+StandardError=append:/srv/Projects/home-assistant/tools/state/service.log
+
+[Install]
+WantedBy=default.target

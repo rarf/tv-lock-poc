@@ -1,0 +1,105 @@
+{
+  "title": "TV da sala",
+  "path": "tv-lock",
+  "icon": "mdi:tv-lock",
+  "show_in_sidebar": true,
+  "require_admin": false,
+  "mode": "storage",
+  "views": [
+    {
+      "title": "Trava parental",
+      "path": "trava",
+      "icon": "mdi:lock",
+      "type": "masonry",
+      "cards": [
+        {
+          "type": "markdown",
+          "content": "## TV da sala\n\nControlo da trava parental das apps."
+        },
+        {
+          "type": "entities",
+          "title": "Estado",
+          "show_header_toggle": false,
+          "state_color": true,
+          "entities": [
+            {
+              "entity": "sensor.tv_sala_bloqueada_raw",
+              "name": "Trancada"
+            },
+            {
+              "entity": "sensor.tv_sala_aviso_raw",
+              "name": "Aviso"
+            },
+            {
+              "entity": "sensor.tv_sala_apps_bloqueadas_raw",
+              "name": "Apps bloqueadas"
+            },
+            {
+              "entity": "sensor.tv_sala_em_uso_raw",
+              "name": "Alguém a ver"
+            },
+            {
+              "entity": "sensor.tv_sala_a_ver_raw",
+              "name": "A ver"
+            },
+            {
+              "entity": "sensor.tv_sala_destrava_ate_raw",
+              "name": "Destrava até"
+            },
+            {
+              "type": "attribute",
+              "entity": "media_player.tv_da_sala",
+              "attribute": "state",
+              "name": "Estado do leitor",
+              "icon": "mdi:play"
+            }
+          ]
+        },
+        {
+          "type": "button",
+          "entity": "button.travar_tv",
+          "name": "Travar TV",
+          "show_icon": true,
+          "show_name": true,
+          "color": "red"
+        },
+        {
+          "type": "button",
+          "entity": "button.destravar_2_h",
+          "name": "Destravar 2 h",
+          "show_icon": true,
+          "show_name": true,
+          "color": "green"
+        },
+        {
+          "type": "button",
+          "entity": "button.destravar_30_min",
+          "name": "Destravar 30 min",
+          "show_icon": true,
+          "show_name": true,
+          "color": "orange"
+        },
+        {
+          "type": "button",
+          "entity": "button.modo_manutencao",
+          "name": "Modo manutenção",
+          "show_icon": true,
+          "show_name": true,
+          "color": "blue"
+        },
+        {
+          "type": "button",
+          "entity": "button.travar_mesmo_assim",
+          "name": "Travar mesmo assim",
+          "show_icon": true,
+          "show_name": true,
+          "color": "red"
+        },
+        {
+          "type": "markdown",
+          "content": "### Como usar\n\n- **Travar TV** — fecha todas as apps. Se alguém estiver a ver, o serviço recusa e nada acontece.\n- **Manter premido Travar TV** — corta mesmo a reprodução em curso.\n- **Destravar 2 h** — abre tudo e ao fim de 2 horas a TV trava sozinha.\n- **Destravar 30 min** — igual, por menos tempo.\n- **Modo manutenção** — abre só a Play Store 30 min, mantendo as apps de streaming fechadas."
+        }
+      ]
+    }
+  ]
+}

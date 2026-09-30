@@ -1,0 +1,131 @@
+tv_trava:
+  alias: "Travar TV da sala"
+  description: >-
+    Trava as 20 apps da TV da sala. Se alguem estiver a ver, mostra aviso com
+    o titulo em vez de cortar a reproducao.
+  mode: single
+  fields:
+    forcar:
+      name: "Forcar mesmo em uso"
+      description: "Travar mesmo com alguem a ver (corta a reproducao)."
+      default: false
+  sequence:
+    - alias: "Pedir trava sem erro"
+      action: rest_command.tv_lock_tentar_travar
+      data:
+        force: "{{ forcar }}"
+      response_variable: _r
+
+    - alias: "Aviso persistente"
+      action: persistent_notification.create
+      data:
+        notification_id: tv_lock_aviso
+        title: "TV da sala — trava parental"
+        message: >-
+          {% if _r.status is mapping and _r.status.ok %}
+            {{ _r.status.message | default('TV travada.') }}
+          {% elif _r.status is mapping %}
+            {{ _r.status.message | default('Nao foi possivel travar.') }}
+          {% else %}
+            Nao foi possivel falar com o servico da trava.
+          {% endif %}
+
+    - choose:
+        - conditions: "{{ _r.status is mapping and not _r.status.ok }}"
+          sequence:
+            - stop: >-
+                {{ _r.status.get('message', 'A TV nao foi travada.') }}
+                Usa "Travar mesmo assim" para cortar a reproducao.
+      default:
+        - stop: >-
+            {{ _r.status.get('message', 'TV da sala travada.')
+            if _r.status is mapping else 'TV da sala travada.' }}
+
+tv_trava_forcar:
+  alias: "Travar mesmo assim (esta alguem a ver)"
+  description: >-
+    Confirmacao explicita: corta a reproducao actual e trava a TV.
+    Usar so depois de ler o aviso do script "Travar TV da sala".
+  mode: single
+  sequence:
+    - alias: "Forcar trava"
+      action: rest_command.tv_lock_do_lock
+      data:
+        force: true
+      response_variable: _rf
+    - stop: "TV da sala travada (forcado)."
+
+tv_destrava:
+  alias: "Destravar TV da sala (2 h)"
+  description: >-
+    Reativa as 20 apps bloqueadas durante o tempo escolhido. Ao expirar, a TV
+    re-trava sozinha, sem ninguem pedir.
+  mode: single
+  fields:
+    minutos:
+      name: "Minutos"
+      default: 120
+      selector:
+        number:
+          min: 5
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: slider
+  sequence:
+    - alias: "Abrir janela de destrava"
+      action: rest_command.tv_lock_do_unlock
+      data:
+        minutos: "{{ minutos }}"
+      response_variable: _u
+    - stop: >-
+        TV da sala destravada ate {{ _u.expires_at | default('?') }}.
+
+tv_destrava_curto:
+  alias: "Destravar 30 min"
+  description: "Destrava 30 minutos para ver o que for preciso."
+  mode: single
+  sequence:
+    - alias: "Abrir janela curta"
+      action: rest_command.tv_lock_do_unlock
+      data:
+        minutos: 30
+      response_variable: _u2
+    - stop: "TV da sala destravada por 30 minutos."
+
+tv_manutencao:
+  alias: "Modo manutencao (so Play Store)"
+  description: >-
+    Reabre apenas a Play Store, mantendo as apps de streaming bloqueadas.
+    Serve para instalar ou actualizar sem dar as criancas o catalogo todo.
+  mode: single
+  fields:
+    minutos:
+      name: "Minutos"
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: min
+          mode: slider
+  sequence:
+    - alias: "Reabrir Play Store"
+      action: rest_command.tv_lock_maintenance
+      data:
+        minutos: "{{ minutos }}"
+    - stop: "Modo manutencao activo: Play Store aberta, streaming bloqueado."
+
+tv_estado:
+  alias: "Ver estado da TV da sala"
+  description: "Mostra apps bloqueadas, o que esta a ver e a janela de destrave."
+  mode: single
+  sequence:
+    - alias: "Ler estado"
+      action: rest_command.tv_lock_status
+      response_variable: _e
+    - stop: >-
+        apps desativadas: {{ _e.refined.tvs.tv_da_sala.disabled_now | count }} ·
+        a ver: {{ _e.refined.guard.jellyfin | map(attribute='title') | join(', ') if _e.refined.guard.jellyfin else 'nada' }} ·
+        destrava ate: {{ _e.refined.unlock_window.expires_at if _e.refined.unlock_window else 'travada' }}

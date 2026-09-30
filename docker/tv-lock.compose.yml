@@ -1,0 +1,30 @@
+services:
+  # Parental lock control plane for the Android TVs. Loopback only: Home
+  # Assistant runs with network_mode: host and calls 127.0.0.1:8129.
+  # The token lives in an ignored, mode-0600 file on the host, bind-mounted
+  # read-only into the container.
+  tv-lock-service:
+    image: python:3.12-slim
+    container_name: casa-tv-lock
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /opt
+    volumes:
+      - /srv/Projects/home-assistant/tools:/opt:ro
+      - /srv/Projects/home-assistant/tools/state:/state
+    command: >
+      sh -c "apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends
+      android-tools-adb >/dev/null 2>&1;
+      python3 /opt/tv_lock_service.py --host 127.0.0.1 --port 8129"
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8129/health',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
