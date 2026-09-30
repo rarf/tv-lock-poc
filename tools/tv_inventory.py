@@ -8,12 +8,20 @@ READ-ONLY: no pm disable-user, no settings change, nothing mutating.
 """
 import json, subprocess, sys, re, os
 from datetime import datetime
+from pathlib import Path
 
-SCRATCH = "/home/rarf/.hermes/cache/scratch"
-OUT = os.path.join(SCRATCH, "tv_baseline.json")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from discovery import load_tvs  # noqa: E402
+
+
+def _tvs() -> dict:
+    return load_tvs()
+
+
+OUT = str(Path(__file__).resolve().parent / "baseline.json")
 
 # IPs rediscovered live (stale .153 no longer exists)
-TVS = load_tvs()
+TVS = _tvs()
 
 # Never disable: launcher, input, settings, system core, casting, bluetooth/remote,
 # accessibility, ADB, vendor control, Google services needed at boot.

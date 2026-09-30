@@ -24,8 +24,14 @@ import json
 import re
 import sqlite3
 import subprocess
+from pathlib import Path
+import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from discovery import load_tvs  # noqa: E402
+
+
+def _tvs() -> dict:
+    return load_tvs()
 import urllib.request
 from datetime import datetime, timezone
 
@@ -38,10 +44,32 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def adb(serial: str, *args: str, timeout: int = 45) -> str:
-    p = subprocess.run(["adb", "-s", serial, *args],
-                       capture_output=True, text=True, timeout=timeout)
-    return p.stdout or ""
+class AdbResult(str):
+    """str result that also remembers whether the call actually succeeded.
+
+    SEC-08: an ADB timeout returns an empty string, which used to be read as
+    "no media sessions" -> verdict FREE -> the TV got locked while somebody was
+    watching. The caller must be able to tell "nothing is playing" from
+    "I could not ask".
+    """
+    __slots__ = ("ok",)
+
+    def __new__(cls, value: str, ok: bool = True):
+        obj = super().__new__(cls, value)
+        obj.ok = ok
+        return obj
+
+
+def adb(serial: str, *args: str, timeout: int = 45) -> AdbResult:
+    try:
+        p = subprocess.run(["adb", "-s", serial, *args],
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return AdbResult("", ok=False)
+    except Exception:
+        return AdbResult("", ok=False)
+    ok = p.returncode == 0
+    return AdbResult((p.stdout or ""), ok=ok)
 
 
 def jf_sessions() -> list[dict]:
@@ -70,7 +98,12 @@ def media_session_state(serial: str) -> dict:
     while merely idle (e.g. an app was opened but nothing plays), so the
     PlaybackState — not the session count — decides.
     """
-    out = adb(serial, "shell", "dumpsys", "media_session", timeout=45)
+    res = adb(serial, "shell", "dumpsys", "media_session", timeout=45)
+    out = str(res)
+    if not res.ok and not out.strip():
+        # Could not read the device: this is NOT "nothing is playing".
+        return {"session_count": 0, "package": None, "state_num": None,
+                "state": "UNREACHABLE", "reachable": False, "sessions": []}
     m = re.search(r"Sessions Stack - have (\d+) sessions?", out)
     count = int(m.group(1)) if m else 0
 
@@ -104,12 +137,12 @@ def media_session_state(serial: str) -> dict:
         top = playing[0]
         return {"session_count": count, "package": top["package"],
                 "state_num": top["state_num"], "state": "PLAYING",
-                "sessions": sessions}
+                "reachable": True, "sessions": sessions}
     if paused:
         top = paused[0]
         return {"session_count": count, "package": top["package"],
                 "state_num": top["state_num"], "state": "PAUSED",
-                "sessions": sessions}
+                "reachable": True, "sessions": sessions}
     # Sessions exist for system UI and TV-center processes that never publish a
     # PlaybackState (e.g. com.mediatek.wwtv.tvcenter). They are NOT playback, so
     # report NONE instead of UNKNOWN — otherwise a parental lock refuses itself
@@ -119,7 +152,7 @@ def media_session_state(serial: str) -> dict:
             "state_num": top.get("state_num"),
             "state": "NONE" if not sessions else label.get(top.get("state_num"),
                                                           "NONE"),
-            "sessions": sessions}
+            "reachable": True, "sessions": sessions}
 
 
 def inspect(tv: str) -> dict:
@@ -127,6 +160,7 @@ def inspect(tv: str) -> dict:
     serial = _tvs().get(tv)
     if not serial:
         return {"tv": tv, "verdict": "UNKNOWN", "reason": "tv desconhecida"}
+    serial_host = serial.split(":")[0]
 
     ms = media_session_state(serial)
     # Jellyfin reports a session per device. Match on device name OR the
@@ -134,23 +168,34 @@ def inspect(tv: str) -> dict:
     # not a server-side bookkeeping entry". A manual `POST /Sessions/Playing`
     # from this host registers as "Jellyfin Server", so a strict DeviceName
     # match alone would miss a genuinely playing stream.
+    # SEC-09: a TV's Jellyfin client reports its HARDWARE name ("MiTV-MSSP3",
+    # "Living Room TV"), not our key ("tv_sala"), so a substring match against
+    # our key never matched — and a device literally named "TV" matched
+    # everything. Match on the ADB serial/MAC-independent identity instead, and
+    # fall back to "any unpaused session" only when the device is unambiguous.
+    jf_all = jf_sessions()
+    live = [s for s in jf_all if s.get("NowPlayingItem")]
+    aliases = {tv, tv.replace("_", " "), serial_host}
     jf = []
-    for s in jf_sessions():
-        npi = s.get("NowPlayingItem")
-        if not npi:
-            continue
-        dev = (s.get("DeviceName") or "").lower().replace(" ", "_")
+    for s in live:
+        dev = (s.get("DeviceName") or "").lower().strip()
         client = (s.get("Client") or "").lower()
-        is_tv = dev == tv or (dev and dev in tv)
+        cid = (s.get("DeviceId") or "").lower()
         is_server = "server" in dev or "server" in client
-        if is_tv or (is_server and not s.get("PlayState", {}).get("IsPaused")):
+        # exact identity only
+        exact = dev == tv.lower() or cid == tv.lower() or dev in aliases
+        # unambiguous fallback: exactly one device is playing, and it is not a
+        # server-side bookkeeping entry
+        sole = len(live) == 1 and not is_server
+        if exact or sole or (is_server and not s.get("PlayState", {}).get("IsPaused")):
             jf.append({
                 "title": npi.get("Name"),
                 "type": npi.get("Type"),
                 "paused": (s.get("PlayState") or {}).get("IsPaused"),
                 "user": s.get("UserName"),
                 "device": s.get("DeviceName"),
-                "matched": "device" if is_tv else "server-session",
+                "matched": ("device" if exact else "sole-device"
+                            if sole else "server-session"),
             })
 
     playing = ms["state"] == "PLAYING" or any(
@@ -161,7 +206,10 @@ def inspect(tv: str) -> dict:
         verdict = "IN_USE"
     elif paused:
         verdict = "PAUSED"
-    elif ms["state"] != "UNKNOWN" or jf:
+    elif ms.get("state") == "UNREACHABLE":
+        # SEC-08: fail closed. An unreachable TV must never be reported FREE.
+        verdict = "UNKNOWN"
+    elif ms.get("state") in ("NONE", "STOPPED") or jf:
         verdict = "FREE"
     else:
         verdict = "UNKNOWN"
@@ -176,6 +224,7 @@ def inspect(tv: str) -> dict:
             "PAUSED": "esta em pausa — travar mataria a sessao",
             "FREE": "nada a reproduzir",
             "UNKNOWN": "nao foi possivel confirmar — por omissao, nao travar",
+            "UNREACHABLE": "a TV nao respondeu — por omissao, nao travar",
         }[verdict],
         "safe_to_lock": verdict == "FREE",
     }

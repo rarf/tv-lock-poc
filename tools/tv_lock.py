@@ -30,7 +30,6 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -53,6 +52,10 @@ PROTECTED_EXACT = {
     "com.google.android.launcher",
     "com.google.android.leanback",
     "com.google.android.leanback.launcher",
+    # Google TV / Chromecast-with-Google-TV default launcher. If this is
+    # disabled the device can end up with no HOME app at all.
+    "com.google.android.apps.tv.launcherx",
+    "com.google.android.googlequicksearchbox",
     "com.miui.home",
     "com.mitv.tvhome.atv",          # Xiaomi TV home surface
     "com.android.settings",
@@ -81,11 +84,17 @@ PROTECTED_PREFIX = (
     "com.google.android.gms",
     "com.google.android.gsf",
     "com.google.android.projection",
+    "com.google.android.katniss",
+    # OEM trees. `com.mitv.` and `com.mstar.` carry Xiaomi/MediaTek settings,
+    # input, screensaver and TV services; disabling them can brick the remote
+    # or the picture. Review per-device before widening.
     "com.miui.",
     "com.mi.",
     "com.xiaomi.",
+    "com.mitv.",
+    "com.mstar.",
+    "com.mediatek.",
     "android.",
-    "com.google.android.katniss",
 )
 
 # Packages that are normally protected, but which Ronald decided to block on
@@ -140,7 +149,9 @@ DEFAULT_STATE: dict[str, dict] = {
     },
 }
 
-STATE_FILE = STATE_DIR / "config.json"
+# Lock policy/targets, SEPARATE from the device topology in discovery.py
+# (config.json). Sharing one file breaks both readers — see the code review.
+STATE_FILE = STATE_DIR / "targets_state.json"
 
 
 # --------------------------------------------------------------------------- io
@@ -153,9 +164,21 @@ def load_config() -> dict:
     return json.loads(STATE_FILE.read_text())
 
 
+def _atomic_write(path: Path, data: str) -> None:
+    """SEC-16: a crash mid-write used to leave a truncated JSON file, which on
+    the next start means "no targets" or, worse, a half-written journal that
+    makes unlock re-enable the wrong set. Write to a temp file, fsync, rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    tmp.replace(path)
+
+
 def save_config(cfg: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    _atomic_write(STATE_FILE, json.dumps(cfg, indent=2, ensure_ascii=False))
 
 
 def journal_path(tv: str) -> Path:
@@ -169,7 +192,7 @@ def load_journal(tv: str) -> dict:
 
 
 def save_journal(tv: str, j: dict) -> None:
-    journal_path(tv).write_text(json.dumps(j, indent=2, ensure_ascii=False))
+    _atomic_write(journal_path(tv), json.dumps(j, indent=2, ensure_ascii=False))
 
 
 # ----------------------------------------------------------------------- adb
@@ -199,9 +222,23 @@ def list_disabled(serial: str) -> list[str]:
 
 
 def is_protected(pkg: str) -> bool:
-    if pkg in UNPROTECT_BY_DECISION:
+    """Normalise before matching.
+
+    Package names are case-sensitive on Android, but the value can arrive from
+    a config file or a shell argument. Comparing raw lets `com.Miui.X` or
+    ` com.miui.x ` slip past the protected set. Whitespace is stripped and
+    matching is case-insensitive, which can only ever protect MORE packages.
+    """
+    if not isinstance(pkg, str):
+        return True  # fail safe: unknown shape is treated as protected
+    name = pkg.strip().lower()
+    if not name:
+        return True
+    if name in {p.strip().lower() for p in UNPROTECT_BY_DECISION}:
         return False
-    return pkg in PROTECTED_EXACT or pkg.startswith(PROTECTED_PREFIX)
+    if name in {p.strip().lower() for p in PROTECTED_EXACT}:
+        return True
+    return name.startswith(tuple(p.strip().lower() for p in PROTECTED_PREFIX))
 
 
 # ------------------------------------------------------------------- commands
@@ -280,12 +317,22 @@ def cmd_block(args) -> dict:
             # Already off and NOT by us: leave it, do not claim it.
             skipped.append({"package": pkg, "reason": "already_disabled_by_other"})
             continue
+        # SEC-07: record the INTENT before mutating. If we are interrupted
+        # between `pm disable-user` and the verification readback, the package
+        # is still re-enabled by `unblock` — a half-written journal would
+        # strand it on the TV with no record anywhere.
+        entries.append({"package": pkg, "state": "pending", "at": now(),
+                        "action": "lock", "batch": args.batch})
+        save_journal(args.tv, journal)
         rc, out = adb(serial, "shell", "pm", "disable-user", "--user", "0", pkg, timeout=60)
         if rc != 0:
+            entries[-1]["state"] = "failed"
+            entries[-1]["error"] = out.strip()[:160]
+            save_journal(args.tv, journal)
             failed.append({"package": pkg, "error": out.strip()[:160]})
             continue
-        entries.append({"package": pkg, "state": "disabled", "at": now(),
-                        "action": "lock", "batch": args.batch})
+        entries[-1]["state"] = "disabled"
+        save_journal(args.tv, journal)
         disabled_now.append(pkg)
 
     # Verify by readback, never trust the exit code alone.
@@ -325,9 +372,23 @@ def cmd_unblock(args) -> dict:
         if e.get("state") != "disabled":
             continue
         pkg = e["package"]
-        if is_protected(pkg):
-            stale.append({"package": pkg, "reason": "refusing to enable protected package"})
+        # SEC-06: a package can become protected AFTER we disabled it (config
+        # change, firmware rename). Refusing to re-enable it would strand it
+        # disabled on the TV forever. It is in OUR journal, so restoring it is
+        # the correct action.
+        if is_protected(pkg) and pkg.strip().lower() not in {
+                p.strip().lower() for p in UNPROTECT_BY_DECISION}:
+            stale.append({"package": pkg,
+                          "reason": "agora protegido, mas foi-nos que desativámos — reativado",
+                          "restored": True})
+        rc, out = adb(serial, "shell", "pm", "enable", pkg, timeout=60)
+        if rc != 0:
+            failed.append({"package": pkg, "error": out.strip()[:160]})
             continue
+        e["state"] = "enabled"
+        e["enabled_at"] = now()
+        reenabled.append(pkg)
+        continue
         rc, out = adb(serial, "shell", "pm", "enable", pkg, timeout=60)
         if rc != 0:
             failed.append({"package": pkg, "error": out.strip()[:160]})
@@ -354,63 +415,11 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# ------------------------------------------------------------------- http api
-class Handler(BaseHTTPRequestHandler):
-    server_version = "tv-lock/1.0"
-
-    def _json(self, payload: dict, code: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _read_token(self) -> str | None:
-        header = self.headers.get("X-TV-Lock-Token")
-        if not header:
-            return None
-        return header.strip()
-
-    def _auth(self) -> bool:
-        token_file = STATE_DIR / "api_token"
-        if not token_file.exists():
-            return False
-        return self._read_token() == token_file.read_text().strip()
-
-    def do_GET(self):  # noqa: N802
-        if self.path.startswith("/status"):
-            self._json(cmd_status(None))
-        elif self.path.startswith("/health"):
-            self._json({"status": "ok", "time": now()})
-        else:
-            self._json({"error": "not found"}, 404)
-
-    def do_POST(self):  # noqa: N802
-        if not self._auth():
-            self._json({"error": "unauthorized"}, 401)
-            return
-        length = int(self.headers.get("Content-Length") or 0)
-        try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
-        except Exception:
-            payload = {}
-        action = self.path.rstrip("/").rsplit("/", 1)[-1]
-        tv = payload.get("tv")
-        if action in ("lock", "unlock"):
-            if tv not in _tvs():
-                self._json({"error": f"tv desconhecida: {tv}"}, 400)
-                return
-            if action == "lock":
-                result = cmd_block(argparse.Namespace(tv=tv, dry_run=False, batch="api"))
-            else:
-                result = cmd_unblock(argparse.Namespace(tv=tv, dry_run=False))
-            self._json(result, 200 if result.get("ok", True) else 500)
-        else:
-            self._json({"error": f"ação desconhecida: {action}"}, 400)
-
-    def log_message(self, fmt, *a):  # keep the journal clean of noise
-        pass
+# ------------------------------------------------------------------- cli
+# NOTE: this module used to ship its own HTTP server on 0.0.0.0 with no
+# actor authorisation and no watching guard. It was removed (SEC-15):
+# tv_lock_service.py is the ONLY HTTP surface, and it is loopback+token
+# + allowlist. Running two servers on the same port was a footgun.
 
 
 def main() -> int:
@@ -429,8 +438,6 @@ def main() -> int:
     p_add = sub.add_parser("add")
     p_add.add_argument("--tv", required=True, choices=list(_tvs()))
     p_add.add_argument("--packages", required=True)
-    p_serve = sub.add_parser("serve")
-    p_serve.add_argument("--port", type=int, default=8129)
 
     args = ap.parse_args()
     if args.cmd == "status":
@@ -442,9 +449,8 @@ def main() -> int:
     elif args.cmd == "add":
         result = cmd_add(args)
     else:
-        print(f"tv_lock API a escutar em 0.0.0.0:{args.port}", flush=True)
-        HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
-        return 0
+        print("comando desconhecido", file=sys.stderr)
+        return 2
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("ok", True) else 1

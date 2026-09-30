@@ -37,6 +37,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from discovery import load_tvs  # noqa: E402
+
+
+def _tvs() -> dict:
+    return load_tvs()
 sys.path.insert(0, str(HERE))
 from discovery import load_tvs  # noqa: E402
 sys.path.insert(0, str(HERE))

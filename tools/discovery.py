@@ -36,8 +36,12 @@ def load_tvs() -> dict:
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text())
-            if isinstance(data, dict) and data:
-                return data
+            if isinstance(data, dict):
+                # Only string values are valid endpoints; ignore anything else
+                # (e.g. a state file written by another tool).
+                valid = {k: v for k, v in data.items() if isinstance(v, str)}
+                if valid:
+                    return valid
         except Exception:
             pass
     return dict(DEFAULT_TVS)

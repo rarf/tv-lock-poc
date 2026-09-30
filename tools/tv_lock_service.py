@@ -44,6 +44,7 @@ from tv_watch_guard import inspect as guard_inspect  # noqa: E402
 STATE_DIR = HERE / "state"
 TOKEN_FILE = STATE_DIR / "api_token"
 WINDOW_FILE = STATE_DIR / "unlock_window.json"
+MAINT_FILE = STATE_DIR / "maintenance.json"
 AUDIT_FILE = STATE_DIR / "audit.log"
 
 DEFAULT_UNLOCK_MINUTES = 120
@@ -138,9 +139,30 @@ def clear_window(actor: str, reason: str) -> None:
     _wake.set()
 
 
+def _close_expired_maintenance() -> None:
+    """SEC-12: re-disable whatever maintenance mode opened, when it lapses."""
+    m = read_json(MAINT_FILE, {})
+    if not m or not m.get("expires_at"):
+        return
+    if now() < datetime.fromisoformat(m["expires_at"]):
+        return
+    tv = m.get("tv")
+    if tv in tv_lock.TVS:
+        import argparse as _ap
+        tv_lock.ensure_connected(tv)
+        for pkg in m.get("packages", []):
+            tv_lock.adb(tv_lock.TVS[tv], "shell", "pm", "disable-user",
+                        "--user", "0", pkg, timeout=60)
+        audit("maintenance_expired", tv, "watchdog", "ok",
+              f"re-bloqueado: {','.join(m.get('packages', []))}")
+    MAINT_FILE.unlink(missing_ok=True)
+    _wake.set()
+
+
 def _watchdog() -> None:
-    """Re-lock automatically when the unlock window lapses."""
+    """Re-lock automatically when the unlock or maintenance window lapses."""
     while True:
+        _close_expired_maintenance()
         w = load_window()
         if w and w.get("expires_at"):
             if now() >= datetime.fromisoformat(w["expires_at"]):
@@ -153,8 +175,15 @@ def _watchdog() -> None:
                                                           only_targets=True))
                     audit("auto_relock", tv, "watchdog",
                           "ok" if res.get("ok") else "error",
-                          f"janela expirou; {len(res.get('disabled', []))} apps")
-                clear_window("watchdog", "janela expirou — re-trava automatica")
+                          f"janela expirou; {len(res.get('disabled', []))} apps; "
+                          f"falhas={res.get('failed')}")
+                    if res.get("ok"):
+                        clear_window("watchdog", "janela expirou — re-trava automatica")
+                    else:
+                        # SEC-11: a failed re-lock must NOT delete the window,
+                        # otherwise the TV is silently left unlocked forever.
+                        audit("auto_relock_failed", tv, "watchdog", "error",
+                              f"janela mantida; {res.get('failed')}")
         _wake.wait(timeout=30)
         _wake.clear()
 
@@ -247,6 +276,13 @@ def handle_unlock(payload: dict, actor: str, params: dict | None = None) -> tupl
         return {"error": f"tv desconhecida: {tv}"}, 400
     minutes = int(payload.get("minutes") or DEFAULT_UNLOCK_MINUTES)
     minutes = max(5, min(minutes, 720))
+
+    # Check transport BEFORE touching anything: an unreachable TV is a 503
+    # (retryable), not a 500, and it must not open a window it cannot honour.
+    connected, detail = tv_lock.ensure_connected(tv)
+    if not connected:
+        audit("unlock", tv, actor, "error", f"ADB indisponivel: {detail}")
+        return {"error": f"ADB nao ligado ({detail})", "tv": tv}, 503
 
     g = guard_inspect(tv)
     import argparse as _ap
