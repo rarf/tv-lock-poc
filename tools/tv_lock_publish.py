@@ -122,6 +122,13 @@ def publish(state: dict) -> None:
 
 
 def main() -> int:
+    # line-buffered: o output tem de aparecer no log a cada ciclo, mesmo
+    # quando o stdout e um ficheiro (block buffering).
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--interval", type=int, default=60)
@@ -136,10 +143,14 @@ def main() -> int:
     while True:
         try:
             publish(collect())
+            sys.stdout.flush()
         except Exception as e:
-            print(f"ERRO no ciclo: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"ERRO no ciclo: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         if args.once:
             return 0
+        # Print the first cycle immediately, then sleep. `publish()` uses
+        # print() without flush and stdout is block-buffered when redirected to
+        # a file, so the output only appeared once the buffer filled.
         time.sleep(max(15, args.interval))
 
 
