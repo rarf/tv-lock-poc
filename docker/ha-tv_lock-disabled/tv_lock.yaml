@@ -1,0 +1,193 @@
+# TV Lock — pacote Home Assistant
+# Gerado a partir de /srv/Projects/home-assistant/lovelace-tv/pack_tv_lock.yaml
+# Editar no projeto; este ficheiro é apenas a instalação em /config.
+# Requer secrets.yaml -> tv_lock_token (mesmo valor de tools/state/api_token).
+
+rest_command:
+  tv_lock_status:
+    url: "http://127.0.0.1:8129/status?tv=tv_da_sala"
+    method: get
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+    timeout: 60
+    response_format: json
+
+  tv_lock_guard:
+    url: "http://127.0.0.1:8129/guard?tv=tv_da_sala"
+    method: get
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+    timeout: 60
+    response_format: json
+
+  tv_lock_do_lock:
+    url: "http://127.0.0.1:8129/lock"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      Content-Type: application/json
+    payload: >-
+      {"tv": "tv_da_sala", "actor": "{{ user_id }}", "force": {{ force | default(false) | lower | to_json }}}
+    timeout: 180
+    response_format: json
+
+  tv_lock_do_unlock:
+    url: "http://127.0.0.1:8129/unlock"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      Content-Type: application/json
+    payload: >-
+      {"tv": "tv_da_sala", "actor": "{{ user_id }}", "minutes": {{ minutes | default(120, true) }}}
+    timeout: 180
+    response_format: json
+
+  tv_lock_maintenance:
+    url: "http://127.0.0.1:8129/maintenance"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      Content-Type: application/json
+    payload: >-
+      {"tv": "tv_da_sala", "actor": "{{ user_id }}", "minutes": {{ minutes | default(30, true) }}}
+    timeout: 120
+    response_format: json
+
+script:
+  tv_trava:
+    alias: "Travar TV da sala"
+    description: >-
+      Trava as 20 apps da TV da sala. Se alguém estiver a ver, o serviço recusa
+      e devolve o título; a confirmação explícita é o script "tv_trava_forcar".
+    mode: single
+    fields:
+      forcar:
+        name: "Forçar mesmo em uso"
+        description: "Travar mesmo com alguém a ver (corta a reprodução)."
+        type: boolean
+        default: false
+    sequence:
+      - action: rest_command.tv_lock_do_lock
+        data:
+          force: "{{ forcar }}"
+      - stop: "TV da sala travada."
+
+  tv_trava_forcar:
+    alias: "Travar mesmo assim (está alguém a ver)"
+    description: "Confirma o corte: a reprodução actual é interrompida."
+    mode: single
+    sequence:
+      - action: rest_command.tv_lock_do_lock
+        data:
+          force: true
+      - stop: "TV da sala travada (forçado)."
+
+  tv_destrava:
+    alias: "Destravar TV da sala (2 h)"
+    description: >-
+      Reativa as 20 apps bloqueadas durante o tempo escolhido. Ao expirar, a TV
+      re-trava sozinha, sem ninguém pedir.
+    mode: single
+    fields:
+      minutos:
+        name: "Minutos"
+        type: number
+        default: 120
+        selector:
+          number:
+            min: 5
+            max: 720
+            step: 5
+            unit_of_measurement: min
+            mode: slider
+    sequence:
+      - action: rest_command.tv_lock_do_unlock
+        data:
+          minutes: "{{ minutos }}"
+      - stop: "TV da sala destravada."
+
+  tv_destrava_curto:
+    alias: "Destravar 30 min"
+    description: "Destrava 30 minutos para ver o que for preciso."
+    mode: single
+    sequence:
+      - action: rest_command.tv_lock_do_unlock
+        data:
+          minutes: 30
+      - stop: "TV da sala destravada por 30 minutos."
+
+  tv_manutencao:
+    alias: "Modo manutenção (só Play Store)"
+    description: >-
+      Reabre apenas a Play Store, mantendo as apps de streaming bloqueadas.
+      Serve para instalar ou actualizar sem dar às crianças o catálogo todo.
+    mode: single
+    fields:
+      minutos:
+        name: "Minutos"
+        type: number
+        default: 30
+        selector:
+          number:
+            min: 5
+            max: 120
+            step: 5
+            unit_of_measurement: min
+            mode: slider
+    sequence:
+      - action: rest_command.tv_lock_maintenance
+        data:
+          minutes: "{{ minutos }}"
+      - stop: "Modo manutenção activo: Play Store aberta, streaming bloqueado."
+
+  tv_estado:
+    alias: "Ver estado da TV da sala"
+    description: "Mostra apps bloqueadas, o que está a ver e a janela de destrave."
+    mode: single
+    sequence:
+      - action: rest_command.tv_lock_status
+        response_variable: estado
+      - stop: >-
+          apps desativadas: {{ estado.tvs.tv_da_sala.disabled_now | count }} ·
+          a ver: {{ estado.guard.jellyfin | map(attribute='title') | join(', ') if estado.guard.jellyfin else 'nada' }} ·
+          destrava até: {{ estado.unlock_window.expires_at if estado.unlock_window else 'travada' }}
+
+template:
+  - sensor:
+      - name: "TV da sala -apps bloqueadas"
+        unique_id: tv_sala_apps_bloqueadas
+        unit_of_measurement: "apps"
+        state: >-
+          {% set s = states('sensor.tv_sala_apps_bloqueadas_raw') %}
+          {{ s | int(0) if s not in ('unknown', 'unavailable') else 0 }}
+        icon: mdi:lock
+
+      - name: "TV da sala -bloqueada"
+        unique_id: tv_sala_bloqueada
+        state: >-
+          {% set s = states('sensor.tv_sala_bloqueada_raw') %}
+          {% if s in ('unknown', 'unavailable') %} unknown
+          {% else %} {{ s }} {% endif %}
+        icon: mdi:tv-off
+
+      - name: "TV da sala -alguem a ver"
+        unique_id: tv_sala_em_uso
+        state: >-
+          {% set s = states('sensor.tv_sala_em_uso_raw') %}
+          {% if s in ('unknown', 'unavailable') %} unknown
+          {% else %} {{ 'sim' if s == 'yes' else 'nao' }} {% endif %}
+        icon: mdi:eye
+
+      - name: "TV da sala -a ver"
+        unique_id: tv_sala_a_ver
+        state: >-
+          {% set s = states('sensor.tv_sala_a_ver_raw') %}
+          {{ s if s not in ('unknown', 'unavailable') else 'nada' }}
+        icon: mdi:play-circle
+
+      - name: "TV da sala -destrava ate"
+        unique_id: tv_sala_destrava_ate
+        state: >-
+          {% set s = states('sensor.tv_sala_destrava_ate_raw') %}
+          {{ s if s not in ('unknown', 'unavailable', 'none') else 'travada' }}
+        icon: mdi:timer-sand

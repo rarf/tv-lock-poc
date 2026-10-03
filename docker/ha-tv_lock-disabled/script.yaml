@@ -1,0 +1,140 @@
+tv_trava:
+  alias: "Travar TV da sala"
+  description: >-
+    Trava as 20 apps da TV da sala. Se alguem estiver a ver, o painel mostra o
+    titulo em vez de cortar a reproducao.
+  mode: single
+  fields:
+    forcar:
+      name: "Forcar mesmo em uso"
+      description: "Travar mesmo com alguem a ver (corta a reproducao)."
+      default: false
+  sequence:
+    - alias: "Pedir trava (sempre 200)"
+      action: rest_command.tv_lock_tentar_travar
+      data:
+        force: "{{ forcar }}"
+      response_variable: _r
+
+    - alias: "Traduzir a resposta do servico"
+      variables:
+        # `content` ja vem parseado (dict) nesta build; from_json aqui
+        # rebentava com ValueError sempre que o servico devolvia um erro.
+        _b: "{{ _r.content }}"
+
+    - alias: "Publicar aviso no painel"
+      action: rest_command.tv_lock_publicar_aviso
+      data:
+        mensagem: >-
+          {% if _b.ok %}TV da sala travada ({{ _b.disabled | default([], true) | length }} apps).
+          {% elif _b.blocked == 'in_use' %}A TV esta em uso: {{ _b.watching | default('reproducao') }}. Usa "Travar mesmo assim" para cortar.
+          {% elif _b.blocked == 'unlock_window' %}A TV esta destravada ate {{ _b.window.expires_at | default('') }}.
+          {% else %}Nao foi possivel travar a TV.{% endif %}
+
+    - choose:
+        - conditions: "{{ _b.ok | default(false) }}"
+          sequence:
+            - stop: >-
+                TV da sala travada ({{ _b.disabled | default([], true) | length }} apps).
+      default:
+        - stop: >-
+            {{ _b.message | default('A TV nao foi travada.') }}
+            Usa "Travar mesmo assim" para cortar a reproducao.
+
+tv_trava_forcar:
+  alias: "Travar mesmo assim (esta alguem a ver)"
+  description: >-
+    Confirmacao explicita: corta a reproducao actual e trava a TV.
+    Usar so depois de ler o aviso do script "Travar TV da sala".
+  mode: single
+  sequence:
+    - alias: "Forcar trava"
+      action: rest_command.tv_lock_tentar_travar
+      data:
+        force: true
+      response_variable: _rf
+    - variables:
+        _bf: "{{ _rf.content }}"
+    - action: rest_command.tv_lock_publicar_aviso
+      data:
+        mensagem: >-
+          {% if _bf.ok %}TV da sala travada ({{ _bf.disabled | default([], true) | length }} apps) — reproducao cortada.
+          {% else %}{{ _bf.message | default('Nao foi possivel travar.') }}{% endif %}
+    - stop: >-
+        {{ _bf.message | default('TV da sala travada (forcado).') }}
+
+tv_destrava:
+  alias: "Destravar TV da sala (2 h)"
+  description: >-
+    Reativa as 20 apps bloqueadas durante o tempo escolhido. Ao expirar, a TV
+    re-trava sozinha, sem ninguem pedir.
+  mode: single
+  fields:
+    minutos:
+      name: "Minutos"
+      default: 120
+      selector:
+        number:
+          min: 5
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: slider
+  sequence:
+    - alias: "Abrir janela de destrava"
+      action: rest_command.tv_lock_do_unlock
+      data:
+        minutos: "{{ minutos }}"
+      response_variable: _u
+    - stop: >-
+        TV da sala destravada ate {{ _u.expires_at | default('?') }}.
+
+tv_destrava_curto:
+  alias: "Destravar 30 min"
+  description: "Destrava 30 minutos para ver o que for preciso."
+  mode: single
+  sequence:
+    - alias: "Abrir janela curta"
+      action: rest_command.tv_lock_do_unlock
+      data:
+        minutos: 30
+      response_variable: _u2
+    - stop: "TV da sala destravada por 30 minutos."
+
+tv_manutencao:
+  alias: "Modo manutencao (so Play Store)"
+  description: >-
+    Reabre apenas a Play Store, mantendo as apps de streaming bloqueadas.
+    Serve para instalar ou actualizar sem dar as criancas o catalogo todo.
+  mode: single
+  fields:
+    minutos:
+      name: "Minutos"
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: min
+          mode: slider
+  sequence:
+    - alias: "Reabrir Play Store"
+      action: rest_command.tv_lock_maintenance
+      data:
+        minutos: "{{ minutos }}"
+    - stop: "Modo manutencao activo: Play Store aberta, streaming bloqueado."
+
+tv_estado:
+  alias: "Ver estado da TV da sala"
+  description: "Mostra apps bloqueadas, o que esta a ver e a janela de destrave."
+  mode: single
+  sequence:
+    - alias: "Ler estado"
+      action: rest_command.tv_lock_status
+      response_variable: _e
+    - stop: >-
+        apps desativadas: {{ (_e.content.tvs.tv_da_sala.disabled_now | default([], true)) | count }} ·
+        a ver: {{ _e.content.guard.jellyfin | default([], true) | map(attribute='title') | join(', ') if _e.content.guard and _e.content.guard.jellyfin else 'nada' }} ·
+        HDMI: {{ 'cortado' if _e.content.guard.verdict != 'FREE' else 'livre' }} ·
+        destrava ate: {{ _e.content.unlock_window.expires_at if _e.content.unlock_window else 'travada' }}

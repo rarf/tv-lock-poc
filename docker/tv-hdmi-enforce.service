@@ -1,0 +1,19 @@
+[Unit]
+Description=Corta o HDMI enquanto a trava parental esta activa (TV da sala)
+After=network-online.target tv-lock-service.service
+Wants=network-online.target
+Requires=tv-lock-service.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/tv-lock-poc
+ExecStart=/usr/bin/python3 %h/projects/tv-lock-poc/tools/hdmi_enforce_loop.py --tv tv_da_sala --interval 15
+Restart=always
+RestartSec=20
+ProtectSystem=strict
+ReadWritePaths=%h/projects/tv-lock-poc/tools/state
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

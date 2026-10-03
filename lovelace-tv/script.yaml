@@ -1,8 +1,8 @@
 tv_trava:
   alias: "Travar TV da sala"
   description: >-
-    Trava as 20 apps da TV da sala. Se alguem estiver a ver, mostra aviso com
-    o titulo em vez de cortar a reproducao.
+    Trava as 20 apps da TV da sala. Se alguem estiver a ver, o painel mostra o
+    titulo em vez de cortar a reproducao.
   mode: single
   fields:
     forcar:
@@ -10,36 +10,36 @@ tv_trava:
       description: "Travar mesmo com alguem a ver (corta a reproducao)."
       default: false
   sequence:
-    - alias: "Pedir trava sem erro"
+    - alias: "Pedir trava (sempre 200)"
       action: rest_command.tv_lock_tentar_travar
       data:
         force: "{{ forcar }}"
       response_variable: _r
 
-    - alias: "Aviso persistente"
-      action: persistent_notification.create
+    - alias: "Traduzir a resposta do servico"
+      variables:
+        # `content` ja vem parseado (dict) nesta build; from_json aqui
+        # rebentava com ValueError sempre que o servico devolvia um erro.
+        _b: "{{ _r.content }}"
+
+    - alias: "Publicar aviso no painel"
+      action: rest_command.tv_lock_publicar_aviso
       data:
-        notification_id: tv_lock_aviso
-        title: "TV da sala — trava parental"
-        message: >-
-          {% if _r.status is mapping and _r.status.ok %}
-            {{ _r.status.message | default('TV travada.') }}
-          {% elif _r.status is mapping %}
-            {{ _r.status.message | default('Nao foi possivel travar.') }}
-          {% else %}
-            Nao foi possivel falar com o servico da trava.
-          {% endif %}
+        mensagem: >-
+          {% if _b.ok %}TV da sala travada ({{ _b.disabled | default([], true) | length }} apps).
+          {% elif _b.blocked == 'in_use' %}A TV esta em uso: {{ _b.watching | default('reproducao') }}. Usa "Travar mesmo assim" para cortar.
+          {% elif _b.blocked == 'unlock_window' %}A TV esta destravada ate {{ _b.window.expires_at | default('') }}.
+          {% else %}Nao foi possivel travar a TV.{% endif %}
 
     - choose:
-        - conditions: "{{ _r.status is mapping and not _r.status.ok }}"
+        - conditions: "{{ _b.ok | default(false) }}"
           sequence:
             - stop: >-
-                {{ _r.status.get('message', 'A TV nao foi travada.') }}
-                Usa "Travar mesmo assim" para cortar a reproducao.
+                TV da sala travada ({{ _b.disabled | default([], true) | length }} apps).
       default:
         - stop: >-
-            {{ _r.status.get('message', 'TV da sala travada.')
-            if _r.status is mapping else 'TV da sala travada.' }}
+            {{ _b.message | default('A TV nao foi travada.') }}
+            Usa "Travar mesmo assim" para cortar a reproducao.
 
 tv_trava_forcar:
   alias: "Travar mesmo assim (esta alguem a ver)"
@@ -49,11 +49,19 @@ tv_trava_forcar:
   mode: single
   sequence:
     - alias: "Forcar trava"
-      action: rest_command.tv_lock_do_lock
+      action: rest_command.tv_lock_tentar_travar
       data:
         force: true
       response_variable: _rf
-    - stop: "TV da sala travada (forcado)."
+    - variables:
+        _bf: "{{ _rf.content }}"
+    - action: rest_command.tv_lock_publicar_aviso
+      data:
+        mensagem: >-
+          {% if _bf.ok %}TV da sala travada ({{ _bf.disabled | default([], true) | length }} apps) — reproducao cortada.
+          {% else %}{{ _bf.message | default('Nao foi possivel travar.') }}{% endif %}
+    - stop: >-
+        {{ _bf.message | default('TV da sala travada (forcado).') }}
 
 tv_destrava:
   alias: "Destravar TV da sala (2 h)"
@@ -126,6 +134,7 @@ tv_estado:
       action: rest_command.tv_lock_status
       response_variable: _e
     - stop: >-
-        apps desativadas: {{ _e.refined.tvs.tv_da_sala.disabled_now | count }} ·
-        a ver: {{ _e.refined.guard.jellyfin | map(attribute='title') | join(', ') if _e.refined.guard.jellyfin else 'nada' }} ·
-        destrava ate: {{ _e.refined.unlock_window.expires_at if _e.refined.unlock_window else 'travada' }}
+        apps desativadas: {{ (_e.content.tvs.tv_da_sala.disabled_now | default([], true)) | count }} ·
+        a ver: {{ _e.content.guard.jellyfin | default([], true) | map(attribute='title') | join(', ') if _e.content.guard and _e.content.guard.jellyfin else 'nada' }} ·
+        HDMI: {{ 'cortado' if _e.content.guard.verdict != 'FREE' else 'livre' }} ·
+        destrava ate: {{ _e.content.unlock_window.expires_at if _e.content.unlock_window else 'travada' }}

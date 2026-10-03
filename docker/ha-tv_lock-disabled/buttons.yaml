@@ -1,0 +1,47 @@
+# TV Lock — botoes do painel (dominio `button` por YAML)
+#
+# O `configuration.yaml` faz `button: !include tv_lock/buttons.yaml`, portanto
+# este ficheiro tem de conter APENAS o mapa de botoes. A versao anterior tinha
+# uma chave `button:` de topo aqui *e* no configuration.yaml, o que anulava o
+# include e deixava as entidades em `unavailable`.
+#
+# `press` aceita `service:` nesta build; `action:` tambem, mas `service:` e o
+# formato que o resto do projeto usa.
+
+travar_tv:
+  name: "Travar TV"
+  icon: mdi:lock
+  press:
+    - service: script.tv_trava
+      data:
+        forcar: false
+
+travar_mesmo_assim:
+  name: "Travar mesmo assim"
+  icon: mdi:lock-alert
+  press:
+    - service: script.tv_trava
+      data:
+        forcar: true
+
+destravar_2_h:
+  name: "Destravar 2 h"
+  icon: mdi:lock-open
+  press:
+    - service: script.tv_destrava
+      data:
+        minutos: 120
+
+destravar_30_min:
+  name: "Destravar 30 min"
+  icon: mdi:lock-open-variant
+  press:
+    - service: script.tv_destrava_curto
+
+modo_manutencao:
+  name: "Modo manutencao"
+  icon: mdi:wrench
+  press:
+    - service: script.tv_manutencao
+      data:
+        minutos: 30

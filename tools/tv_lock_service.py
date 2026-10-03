@@ -40,6 +40,7 @@ sys.path.insert(0, str(HERE))
 import tv_lock  # noqa: E402
 from discovery import load_tvs  # noqa: E402
 from tv_watch_guard import inspect as guard_inspect  # noqa: E402
+import hdmi_lock  # noqa: E402
 
 STATE_DIR = HERE / "state"
 TOKEN_FILE = STATE_DIR / "api_token"
@@ -193,7 +194,21 @@ def handle_guard(tv: str) -> dict:
     return guard_inspect(tv)
 
 
-def handle_lock_safe(payload: dict, actor: str, params: dict | None = None) -> tuple[dict, int]:
+def _hdmi(fn, tv: str, cut: bool = False) -> dict:
+    """Run an HDMI action without letting it break the app lock.
+
+    The app lock is the primary control and must complete even if the TV is
+    unreachable for HDMI purposes. Failures are reported, never swallowed.
+    """
+    try:
+        return fn(tv, cut_screen=cut) if cut else fn(tv)
+    except Exception as e:  # noqa: BLE001
+        audit("hdmi_error", tv, "service", "error", f"{type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def handle_lock_safe(payload: dict, actor: str, params: dict | None = None,
+        req_headers: dict | None = None) -> tuple[dict, int]:
     """Same as handle_lock, but never returns 4xx/5xx.
 
     Home Assistant aborts a script sequence on a rest_command error, so the
@@ -203,14 +218,22 @@ def handle_lock_safe(payload: dict, actor: str, params: dict | None = None) -> t
     tv = _tv_from(payload, params)
     if tv not in tv_lock._tvs():
         return {"ok": False, "blocked": "unknown_tv", "message": f"tv desconhecida: {tv}"}, 200
-    force = payload.get("force") is True
+    hdr_force = (req_headers or {}).get("X-TV-Lock-Force", "")
+    force = payload.get("force") is True or str(hdr_force).lower() == "true"
 
     w = window_active()
-    if w and w.get("tv") == tv and not force:
-        audit("lock_refused_window", tv, actor, "blocked", f"destrava ate {w['expires_at']}")
-        return {"ok": False, "blocked": "unlock_window",
-                "message": f"A TV está destravada até {w['expires_at']}.",
-                "window": w}, 200
+    if w and w.get("tv") == tv:
+        if not force:
+            audit("lock_refused_window", tv, actor, "blocked",
+                  f"destrava ate {w['expires_at']}")
+            return {"ok": False, "blocked": "unlock_window",
+                    "message": f"A TV está destravada até {w['expires_at']}.",
+                    "window": w}, 200
+        # force means "travar agora": close the window first, otherwise the
+        # watchdog would re-open/lock on a window the adult just cancelled.
+        audit("lock_override_window", tv, actor, "ok",
+              f"forcado apesar da janela ate {w['expires_at']}")
+        clear_window(actor, "trava forcada durante a janela de destrava")
 
     g = guard_inspect(tv)
     if not g["safe_to_lock"]:
@@ -227,19 +250,24 @@ def handle_lock_safe(payload: dict, actor: str, params: dict | None = None) -> t
                                           batch=f"lock-{actor}", only_targets=True))
     audit("lock", tv, actor, "ok" if res.get("ok") else "error",
           f"{len(res.get('disabled', []))} apps; force={force}")
+    # The HDMI lock travels with the app lock: same action, same authorisation.
+    hd = _hdmi(hdmi_lock.engage, tv, cut=True)
     return {"ok": bool(res.get("ok")), "blocked": None,
             "disabled": res.get("disabled", []),
+            "hdmi": hd,
             "message": f"TV da sala travada ({len(res.get('disabled', []))} apps)."}, 200
 
 
-def handle_lock(payload: dict, actor: str, params: dict | None = None) -> tuple[dict, int]:
+def handle_lock(payload: dict, actor: str, params: dict | None = None,
+        req_headers: dict | None = None) -> tuple[dict, int]:
     tv = _tv_from(payload, params)
     if tv not in tv_lock._tvs():
         return {"error": f"tv desconhecida: {tv}"}, 400
     # Safety default: only an explicit `force: true` may cut playback. A missing
     # or malformed field must NEVER be treated as True — a caller that loses its
     # templating would otherwise silently override the watching guard.
-    force = payload.get("force") is True
+    hdr_force = (req_headers or {}).get("X-TV-Lock-Force", "")
+    force = payload.get("force") is True or str(hdr_force).lower() == "true"
 
     w = window_active()
     # `force` means the adult explicitly chose to lock, so it must also override
@@ -267,14 +295,22 @@ def handle_lock(payload: dict, actor: str, params: dict | None = None) -> tuple[
                                           batch=f"lock-{actor}", only_targets=True))
     audit("lock", tv, actor, "ok" if res.get("ok") else "error",
           f"{len(res.get('disabled', []))} apps; force={force}")
+    # HDMI lock travels with the app lock: same action, same authorisation.
+    hd = _hdmi(hdmi_lock.engage, tv, cut=True)
+    res["hdmi"] = hd
     return res, 200 if res.get("ok") else 500
 
 
-def handle_unlock(payload: dict, actor: str, params: dict | None = None) -> tuple[dict, int]:
+def handle_unlock(payload: dict, actor: str, params: dict | None = None,
+                  req_headers: dict | None = None) -> tuple[dict, int]:
     tv = _tv_from(payload, params)
     if tv not in tv_lock._tvs():
         return {"error": f"tv desconhecida: {tv}"}, 400
-    minutes = int(payload.get("minutes") or DEFAULT_UNLOCK_MINUTES)
+    # HA evaluates a rest_command payload template before the script's `data`,
+    # so `minutes` silently became the 120-minute default. The header is the
+    # reliable channel; the body stays as a fallback for direct calls.
+    minutes_raw = (req_headers or {}).get("X-TV-Lock-Minutes")
+    minutes = int(minutes_raw or payload.get("minutes") or DEFAULT_UNLOCK_MINUTES)
     minutes = max(5, min(minutes, 720))
 
     # Check transport BEFORE touching anything: an unreachable TV is a 503
@@ -293,8 +329,10 @@ def handle_unlock(payload: dict, actor: str, params: dict | None = None) -> tupl
     w = set_window(tv, minutes, actor)
     audit("unlock", tv, actor, "ok",
           f"{len(res.get('re_enabled', []))} apps; {minutes} min")
+    hd = _hdmi(lambda tv: hdmi_lock.release(tv, wake=False), tv)
     return {"ok": True, "tv": tv, "re_enabled": len(res.get("re_enabled", [])),
             "window": w, "expires_at": w["expires_at"],
+            "hdmi": hd,
             "guarded": g["verdict"] != "FREE"}, 200
 
 
@@ -465,7 +503,12 @@ class Handler(BaseHTTPRequestHandler):
         fn = handlers.get(path)
         if not fn:
             return self._json({"error": "not found"}, 404)
-        result, code = fn(payload, actor, params)
+        # Pass the request headers too: the unlock duration travels there
+        # because HA renders a rest_command payload before the script's data.
+        try:
+            result, code = fn(payload, actor, params, dict(self.headers))
+        except TypeError:
+            result, code = fn(payload, actor, params)
         self._json(result, code)
 
     def log_message(self, fmt, *a):

@@ -1,0 +1,92 @@
+# TV Lock — sensores derivados (template sensor)
+#
+# O publisher escreve sensores *_raw; aqui so traduzimos para leitura humana.
+# Sem `{% set %}` com espacos nas bordas: nesta build o estado saia com
+# whitespace e o HA mostrava 0 / unknown mesmo com o raw correcto.
+#
+# Os BOTOES vivem aqui como template.button com `press`: nesta build
+# (Core 2026.8.3) `button.CONFIG_SCHEMA` e None, ou seja, o dominio nao aceita
+# configuracao por YAML. Com `button: !include buttons.yaml` no configuration.yaml
+# as entidades ficam `unavailable` e o HA acusa a integracao template de as ter
+# perdido. Por isso o include de buttons.yaml e removido do configuration.yaml.
+
+- sensor:
+    - name: "TV da sala - apps bloqueadas"
+      unique_id: tv_sala_apps_bloqueadas
+      unit_of_measurement: "apps"
+      state: >-
+        {{ states('sensor.tv_sala_apps_bloqueadas_raw') | int(0) }}
+      icon: mdi:lock
+
+    - name: "TV da sala - bloqueada"
+      unique_id: tv_sala_bloqueada
+      state: >-
+        {% set s = states('sensor.tv_sala_bloqueada_raw') %}
+        {{ 'unknown' if s in ['unknown', 'unavailable'] else s }}
+      icon: mdi:tv-off
+
+    - name: "TV da sala - alguem a ver"
+      unique_id: tv_sala_em_uso
+      state: >-
+        {% set s = states('sensor.tv_sala_em_uso_raw') %}
+        {{ 'unknown' if s in ['unknown', 'unavailable'] else ('sim' if s == 'yes' else 'nao') }}
+      icon: mdi:eye
+
+    - name: "TV da sala - a ver"
+      unique_id: tv_sala_a_ver
+      state: >-
+        {% set s = states('sensor.tv_sala_a_ver_raw') %}
+        {{ 'nada' if s in ['unknown', 'unavailable'] else s }}
+      icon: mdi:play-circle
+
+    - name: "TV da sala - destrava ate"
+      unique_id: tv_sala_destrava_ate
+      state: >-
+        {% set s = states('sensor.tv_sala_destrava_ate_raw') %}
+        {{ 'travada' if s in ['unknown', 'unavailable', 'none'] else s }}
+      icon: mdi:timer-sand
+
+    - name: "TV da sala - HDMI"
+      unique_id: tv_sala_hdmi
+      state: >-
+        {% set s = states('sensor.tv_sala_aviso_raw') %}
+        {{ 'corte automatico ativo' if 'hdmi' in s | lower else 'CEC desligado' }}
+      icon: mdi:hdmi
+- button:
+    - name: "Travar TV"
+      unique_id: tv_lock_botao_travar
+      icon: mdi:lock
+      press:
+        - service: script.tv_trava
+          data:
+            forcar: false
+
+    - name: "Travar mesmo assim"
+      unique_id: tv_lock_botao_travar_forcar
+      icon: mdi:lock-alert
+      press:
+        - service: script.tv_trava
+          data:
+            forcar: true
+
+    - name: "Destravar 2 h"
+      unique_id: tv_lock_botao_destravar_2h
+      icon: mdi:lock-open
+      press:
+        - service: script.tv_destrava
+          data:
+            minutos: 120
+
+    - name: "Destravar 30 min"
+      unique_id: tv_lock_botao_destravar_30m
+      icon: mdi:lock-open-variant
+      press:
+        - service: script.tv_destrava_curto
+
+    - name: "Modo manutencao"
+      unique_id: tv_lock_botao_manutencao
+      icon: mdi:wrench
+      press:
+        - service: script.tv_manutencao
+          data:
+            minutos: 30

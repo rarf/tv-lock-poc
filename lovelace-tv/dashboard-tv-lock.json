@@ -48,7 +48,7 @@
             },
             {
               "type": "attribute",
-              "entity": "media_player.tv_da_sala",
+              "entity": "media_player.tv_da_sala_2",
               "attribute": "state",
               "name": "Estado do leitor",
               "icon": "mdi:play"

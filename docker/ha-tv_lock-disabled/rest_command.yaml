@@ -1,0 +1,89 @@
+# TV Lock - rest_command
+#
+# Notas desta build (Home Assistant 2026.8.3), todas verificadas em 2026-09-30:
+#  - `response_format` NAO e opcao valida -> removido.
+#  - `to_json` e `bool(force=true)` NAO existem -> comparacao Jinja simples.
+#  - `packages:` e silenciosamente ignorado -> incluido no topo do config.yaml.
+#  - `persistent_notification` nao persiste -> o aviso vive num sensor.
+#  - O `rest_command` NAO expoe `user_id` nos templates: a identidade e provada
+#    pelo header `X-HA-Token` (token de longa duracao de um adulto). O servico
+#    valida o hash contra a allowlist e recusa quem nao for Ronald ou Marcia.
+#  - Com payload em bloco folded, o campo `tv` nao chegava ao servidor; por isso
+#    `tv` viaja tambem na query string, que e sempre entregue.
+
+tv_lock_status:
+    url: "http://127.0.0.1:8129/status?tv=tv_da_sala"
+    method: get
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+    timeout: 60
+
+tv_lock_guard:
+    url: "http://127.0.0.1:8129/guard?tv=tv_da_sala"
+    method: get
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+    timeout: 60
+
+# Resposta sempre 200 com o veredicto: o script decide se trava ou avisa.
+# Um 409 no rest_command aborta a sequencia antes de se mostrar o aviso.
+tv_lock_tentar_travar:
+    url: "http://127.0.0.1:8129/tentar-travar?tv=tv_da_sala"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+      Content-Type: application/json
+      # Mesmo motivo do unlock: o payload e' avaliado cedo demais. O header e
+      # o canal previsivel para o `force`.
+      X-TV-Lock-Force: "{{ force | default(false) }}"
+    payload: "{}"
+    timeout: 180
+
+tv_lock_do_lock:
+    url: "http://127.0.0.1:8129/lock?tv=tv_da_sala"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+      Content-Type: application/json
+    payload: >-
+      {"force": {{ (force is string and force | lower == "true") or force is true }}}
+    timeout: 180
+
+tv_lock_do_unlock:
+    url: "http://127.0.0.1:8129/unlock?tv=tv_da_sala"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+      Content-Type: application/json
+      # `minutes` no payload caia sempre no default(120) porque o template e
+      # avaliado antes das data do script. Passar por query string e previsivel.
+      X-TV-Lock-Minutes: "{{ minutos if minutos is defined else 120 }}"
+    payload: "{}"
+    timeout: 180
+
+tv_lock_maintenance:
+    url: "http://127.0.0.1:8129/maintenance?tv=tv_da_sala"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+      Content-Type: application/json
+    payload: >-
+      {"minutes": {{ minutes | default(30, true) }}}
+    timeout: 120
+
+tv_lock_publicar_aviso:
+    url: "http://127.0.0.1:8129/aviso?tv=tv_da_sala"
+    method: post
+    headers:
+      X-TV-Lock-Token: !secret tv_lock_token
+      X-HA-Token: !secret tv_lock_ha_token
+      Content-Type: application/json
+    payload: >-
+      {"mensagem": "{{ mensagem | replace('"', "'") }}"}
+    timeout: 30

@@ -1,3 +1,35 @@
+
+> ## ⚠️ Pausado por decisão do Ronald (2026-10-03)
+>
+> A trava parental no HA foi **cancelada**. Motivo: *"a intenção está boa mas a
+> experiência e solução não"*.
+>
+> **Estado:** serviços `tv-lock-service`, `tv-lock-publisher` e
+> `tv-hdmi-enforce` parados e `disabled`. Integração removida do
+> `configuration.yaml` do Home Assistant. Segredos `tv_lock_*` apagados do
+> `secrets.yaml`. Tokens locais apagados de `tools/state/`.
+>
+> **Rollback:** os ficheiros YAML do HA estão em
+> `docker/ha-tv_lock-disabled/`. O registo de entidades do HA tem backup em
+> `.storage/core.entity_registry.bak-20261003`. O código continua em `tools/`.
+>
+> **O que fica de learning (medido nesta máquina, não confirmado noutra):**
+>
+> | Fato | Como foi verificado |
+> |---|---|
+> | `settings global hdmi_control_enabled` aceita escrita do shell ADB e reverte | write → readback → restore na MiTV MSSP3 |
+> | `KEYCODE_SLEEP` corta o ecrã, `KEYCODE_WAKEUP` acorda | `mWakefulness=Asleep` / `Awake` |
+> | O standby desta TV é *screen-off*: o Android fica vivo e o ADB mantém-se ligado | ADB respondeu com o ecrã apagado |
+> | Não há Wake-on-LAN | UDP Magic Packet não acorda a TV |
+> | `button.CONFIG_SCHEMA is None` no Core 2026.8.3 | introspecção no container |
+> | `rest_command.content` já vem parseado; `from_json` rebenta com `ValueError` | erro reportado pelo frontend |
+> | O payload de `rest_command` é avaliado **antes** das `data` do script | `minutes` caía sempre no `default(120)` |
+>
+> **Causa raiz da frustração:** a TV da sala mudou de `.197` para `.247` por DHCP
+> e nada re-descobria o endereço. A trava deixou de funcionar sem erro visível.
+
+---
+
 # TV Lock — proof of concept
 
 Parental control for Android/Google TV over ADB, driven from Home Assistant.
